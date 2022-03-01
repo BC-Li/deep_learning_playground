@@ -1,0 +1,3 @@
+This repository contains some test codes on deep learning.
+
+cnn.py: classic CNN structures and train code on FASHION dataset. see blog post: https://bc-li.github.io/paper/cnn
