@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from torch.nn.modules import flatten
 from torch.nn.modules.conv import Conv2d
 from torch.nn.modules.pooling import AvgPool2d
+from torch.nn import functional as F
 
 
 def set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend):
@@ -265,7 +266,6 @@ class inception_block(nn.Module):
 b1 = nn.Sequential(
     nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3), nn.ReLU(), nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 )
-
 b2 = nn.Sequential(
     nn.Conv2d(64, 64, kernel_size=1),
     nn.ReLU(),
@@ -292,16 +292,55 @@ b5 = nn.Sequential(
     nn.AdaptiveAvgPool2d((1, 1)),
     nn.Flatten(),
 )
-
-
 inception_net = nn.Sequential(b1, b2, b3, b4, b5, nn.Linear(1024, 10))
+# resnet
+class Residual(nn.Module):  # @save
+    def __init__(self, input_channels, num_channels, use_1x1conv=False, strides=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(input_channels, num_channels, kernel_size=3, padding=1, stride=strides)
+        self.conv2 = nn.Conv2d(num_channels, num_channels, kernel_size=3, padding=1)
+        if use_1x1conv:
+            self.conv3 = nn.Conv2d(input_channels, num_channels, kernel_size=1, stride=strides)
+        else:
+            self.conv3 = None
+        self.bn1 = nn.BatchNorm2d(num_channels)
+        self.bn2 = nn.BatchNorm2d(num_channels)
+
+    def forward(self, X):
+        Y = F.relu(self.bn1(self.conv1(X)))
+        Y = self.bn2(self.conv2(Y))
+        if self.conv3:
+            X = self.conv3(X)
+        Y += X
+        return F.relu(Y)
+
+
+b1 = nn.Sequential(
+    nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3),
+    nn.BatchNorm2d(64),
+    nn.ReLU(),
+    nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+)
+
+
+def resnet_block(input_channels, num_channels, num_residuals, first_block=False):
+    blk = []
+    for i in range(num_residuals):
+        if i == 0 and not first_block:
+            blk.append(Residual(input_channels, num_channels, use_1x1conv=True, strides=2))
+        else:
+            blk.append(Residual(num_channels, num_channels))
+    return blk
+
+
+b2 = nn.Sequential(*resnet_block(64, 64, 2, first_block=True))
+b3 = nn.Sequential(*resnet_block(64, 128, 2))
+b4 = nn.Sequential(*resnet_block(128, 256, 2))
+b5 = nn.Sequential(*resnet_block(256, 512, 2))
+
+resnet = nn.Sequential(b1, b2, b3, b4, b5, nn.AdaptiveAvgPool2d((1, 1)), nn.Flatten(), nn.Linear(512, 10))
 # 训练部分
 X = torch.rand(size=(1, 1, 28, 28), dtype=torch.float32)
-
-
-batch_size = 128
-resize = 96
-train_iter, test_iter = load_data_fashion_mnist(batch_size=batch_size, resize=resize)
 
 
 def evaluate_accuracy_gpu(net, data_iter, device=None):  # @save
@@ -362,5 +401,8 @@ def train_model(net, train_iter, test_iter, num_epochs, lr, device):
     print(f"{metric[2] * num_epochs / timer.sum():.1f} examples/sec " f"on {str(device)}")
 
 
-lr, num_epochs = 0.1, 10
-train_model(inception_net, train_iter, test_iter, num_epochs, lr, try_gpu())
+batch_size = 256
+resize = 96
+train_iter, test_iter = load_data_fashion_mnist(batch_size=batch_size, resize=resize)
+lr, num_epochs = 0.05, 10
+train_model(resnet, train_iter, test_iter, num_epochs, lr, try_gpu())
