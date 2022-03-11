@@ -339,6 +339,75 @@ b4 = nn.Sequential(*resnet_block(128, 256, 2))
 b5 = nn.Sequential(*resnet_block(256, 512, 2))
 
 resnet = nn.Sequential(b1, b2, b3, b4, b5, nn.AdaptiveAvgPool2d((1, 1)), nn.Flatten(), nn.Linear(512, 10))
+
+# DenseNet
+def conv_block(input_channels, num_channels):
+    return nn.Sequential(
+        nn.BatchNorm2d(input_channels), nn.ReLU(), nn.Conv2d(input_channels, num_channels, kernel_size=3, padding=1)
+    )
+
+
+class DenseBlock(nn.Module):
+    def __init__(self, num_convs, input_channels, num_channels):
+        super(DenseBlock, self).__init__()
+        layer = []
+        for i in range(num_convs):
+            layer.append(conv_block(num_channels * i + input_channels, num_channels))
+        self.net = nn.Sequential(*layer)
+
+    def forward(self, X):
+        for blk in self.net:
+            Y = blk(X)
+            # 连接通道维度上每个块的输入和输出
+            X = torch.cat((X, Y), dim=1)
+        return X
+
+
+blk = DenseBlock(2, 3, 10)
+X = torch.randn(4, 3, 8, 8)
+Y = blk(X)
+print(Y.shape)
+# 由于每个稠密块都会带来通道数的增加，使用过多则会过于复杂化模型。 而过渡层可以用来控制模型复杂度。 它通过 1×1 卷积层来减小通道数，并使用步幅为2的平均汇聚层减半高和宽，从而进一步降低模型复杂度。
+def transition_block(input_channels, num_channels):
+    return nn.Sequential(
+        nn.BatchNorm2d(input_channels),
+        nn.ReLU(),
+        nn.Conv2d(input_channels, num_channels, kernel_size=1),
+        nn.AvgPool2d(kernel_size=2, stride=2),
+    )
+
+
+blk = transition_block(23, 10)
+print(blk(Y).shape)
+# the same as resnet
+# b1 = nn.Sequential(
+#     nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3),
+#     nn.BatchNorm2d(64),
+#     nn.ReLU(),
+#     nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+# )
+num_channels, growth_rate = 64, 32
+num_convs_in_dense_blocks = [4, 4, 4, 4]
+blks = []
+
+for i, num_convs in enumerate(num_convs_in_dense_blocks):
+    blks.append(DenseBlock(num_convs, num_channels, growth_rate))
+    num_channels += num_convs * growth_rate
+    if i != len(num_convs_in_dense_blocks) - 1:
+        blks.append(transition_block(num_channels, num_channels // 2))
+        num_channels = num_channels // 2
+
+
+densenet = nn.Sequential(
+    b1,
+    *blks,
+    nn.BatchNorm2d(num_channels),
+    nn.ReLU(),
+    nn.AdaptiveMaxPool2d((1, 1)),
+    nn.Flatten(),
+    nn.Linear(num_channels, 10),
+)
+
 # 训练部分
 X = torch.rand(size=(1, 1, 28, 28), dtype=torch.float32)
 
@@ -404,5 +473,5 @@ def train_model(net, train_iter, test_iter, num_epochs, lr, device):
 batch_size = 256
 resize = 96
 train_iter, test_iter = load_data_fashion_mnist(batch_size=batch_size, resize=resize)
-lr, num_epochs = 0.05, 10
-train_model(resnet, train_iter, test_iter, num_epochs, lr, try_gpu())
+lr, num_epochs = 0.1, 10
+train_model(densenet, train_iter, test_iter, num_epochs, lr, try_gpu())
